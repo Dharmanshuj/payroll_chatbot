@@ -199,7 +199,7 @@ def get_salary_payment(attendance_id: int):
     cursor.execute(
         """
         SELECT final_salary
-        FROM salary_payment
+f        FROM salary_payment
         WHERE attendance_id = %s
         """,
         (attendance_id,)
