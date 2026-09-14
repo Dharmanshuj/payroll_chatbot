@@ -32,6 +32,14 @@ public class SecurityConfig {
     @Value("${CORS_ALLOWED_ORIGINS:http://localhost:3000}")
     private String allowedOrigins;
 
+    // Admin Basic Auth credentials, sourced from the environment (same ADMIN_USERNAME /
+    // ADMIN_PASSWORD used by the FastAPI /login endpoint). No hardcoded fallback on purpose.
+    @Value("${ADMIN_USERNAME}")
+    private String adminUsername;
+
+    @Value("${ADMIN_PASSWORD}")
+    private String adminPassword;
+
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
     }
@@ -75,8 +83,8 @@ public class SecurityConfig {
 
     @Bean
     public UserDetailsService userDetailsService(PasswordEncoder passwordEncoder) {
-        UserDetails admin = User.withUsername("admin")
-                .password(passwordEncoder.encode("admin"))
+        UserDetails admin = User.withUsername(adminUsername)
+                .password(passwordEncoder.encode(adminPassword))
                 .roles("ADMIN")
                 .build();
 
