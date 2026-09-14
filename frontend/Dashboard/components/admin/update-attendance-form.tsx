@@ -46,7 +46,8 @@ export function UpdateAttendanceForm() {
         throw new Error("Admin session not found. Please log in again.");
       }
 
-      const response = await fetch("http://localhost:8080/api/employees/attendance", {
+      const mcpApiUrl = process.env.NEXT_PUBLIC_MCP_API_URL || "http://localhost:8080";
+      const response = await fetch(`${mcpApiUrl}/api/employees/attendance`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

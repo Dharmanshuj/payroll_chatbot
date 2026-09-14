@@ -1,16 +1,25 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.chat_routes import router as chat_router
 
 app = FastAPI()
 
-# 1. Define allowed origins (your React dev server)
-origins = [
+# 1. Define allowed origins. Defaults cover local dev; set CORS_ORIGINS as a
+# comma-separated list (e.g. "https://your-app.vercel.app,http://localhost:3000")
+# in the deployment environment to allow the real frontend domain too.
+_default_origins = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "http://localhost:5174",
-    "http://localhost:3000"
+    "http://localhost:3000",
 ]
+_env_origins = os.getenv("CORS_ORIGINS")
+origins = (
+    [o.strip() for o in _env_origins.split(",") if o.strip()]
+    if _env_origins
+    else _default_origins
+)
 
 # 2. Add the Middleware
 app.add_middleware(

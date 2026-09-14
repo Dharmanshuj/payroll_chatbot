@@ -1,6 +1,7 @@
 from database.db import get_connection
 from dotenv import load_dotenv
 load_dotenv()
+import os
 import uuid
 from fastapi import FastAPI, Depends, HTTPException, APIRouter
 from fastapi.responses import StreamingResponse
@@ -13,6 +14,10 @@ from services.security_service import get_current_user
 from services.auth_services import hash_password, verify_password, create_access_token
 
 router = APIRouter()
+
+# Admin login credentials come from the environment (see .env), not hardcoded here.
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 # --- Schemas ---
 class QueryRequest(BaseModel):
@@ -30,8 +35,13 @@ def get_routes():
 @router.post("/login")
 # Change the argument to use OAuth2PasswordRequestForm
 async def login(credentials: OAuth2PasswordRequestForm = Depends()):
-    # Hardcoded ADMIN login
-    if credentials.username == "ADMIN" and credentials.password == "admin123":
+    # ADMIN login (credentials sourced from ADMIN_USERNAME / ADMIN_PASSWORD in the environment)
+    if (
+        ADMIN_USERNAME
+        and ADMIN_PASSWORD
+        and credentials.username == ADMIN_USERNAME
+        and credentials.password == ADMIN_PASSWORD
+    ):
         token = create_access_token("ADMIN", "Administrator")
         return {"access_token": token, "token_type": "bearer"}
 

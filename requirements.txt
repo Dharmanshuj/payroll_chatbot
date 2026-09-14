@@ -33,7 +33,7 @@ python-dotenv
 loguru
 passlib
 langchain-google-genai
-mysql-connector-python
+psycopg2-binary
 argon2-cffi
 PyJWT
 httpx

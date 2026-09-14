@@ -1,0 +1,22 @@
+# Not needed inside the FastAPI image / would bloat the build context
+venv/
+frontend/
+demo/
+tests/
+# Raw source PDFs are only read by the offline ingest.py script, not the running
+# API (rag/retriever.py loads the prebuilt vector_store/ index instead).
+documents/
+.git/
+.idea/
+.vscode/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+logs/
+*.log
+
+# Secrets must never be baked into the image; Render/host env vars are used instead.
+.env
+.env.*
+!.env.example
