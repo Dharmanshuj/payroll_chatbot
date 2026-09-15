@@ -7,6 +7,7 @@ Each call runs in a dedicated daemon thread to avoid blocking application shutdo
 import json
 import asyncio
 import concurrent.futures
+import logging
 import os
 from typing import Optional
 
@@ -15,6 +16,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.client.session import ClientSession
 from langchain_core.runnables.config import RunnableConfig
 
+logger = logging.getLogger(__name__)
 
 # ── Spring Boot MCP Server URL ───────────────────────────────────────────────
 SPRING_MCP_URL = os.getenv("SPRING_MCP_URL", "http://localhost:8080/mcp")
@@ -36,7 +38,7 @@ async def _call_mcp_tool(name: str, args: dict) -> str:
     """Connect to Spring Boot MCP server, call a tool, return the text result."""
     try:
         async with asyncio.timeout(MCP_OPERATION_TIMEOUT_SECONDS):
-            async with streamable_http_client(SPRING_MCP_URL) as (read, write, _get_session_id):
+            async with streamable_http_client(SPRING_MCP_URL) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     result = await session.call_tool(name, args)
@@ -44,8 +46,16 @@ async def _call_mcp_tool(name: str, args: dict) -> str:
                         return result.content[0].text
                     return json.dumps({"error": "No result returned."})
     except asyncio.TimeoutError:
+        logger.error(
+            "MCP tool '%s' timed out after %ss (SPRING_MCP_URL=%s)",
+            name, MCP_OPERATION_TIMEOUT_SECONDS, SPRING_MCP_URL,
+        )
         return json.dumps({"error": f"MCP tool call timed out ({MCP_OPERATION_TIMEOUT_SECONDS}s). Is Spring Boot running?"})
     except Exception as e:
+        logger.exception(
+            "MCP tool '%s' failed (SPRING_MCP_URL=%s): %s",
+            name, SPRING_MCP_URL, e,
+        )
         return json.dumps({"error": f"MCP tool call failed: {str(e)}"})
 
 
@@ -60,8 +70,12 @@ def _run(name: str, args: dict) -> dict:
     try:
         raw = future.result(timeout=MCP_THREAD_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
+        logger.error(
+            "MCP tool '%s' thread timed out after %ss", name, MCP_THREAD_TIMEOUT_SECONDS
+        )
         return {"error": "Technical Timeout: The MCP thread took too long to respond."}
     except Exception as e:
+        logger.exception("MCP tool '%s' thread failed: %s", name, e)
         return {"error": f"Technical Error: {str(e)}"}
         
     try:

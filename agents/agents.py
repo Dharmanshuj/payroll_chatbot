@@ -1,8 +1,11 @@
 import os
 import json
+import logging
 import operator
 from typing import TypedDict, Annotated
 
+from google.genai.errors import ServerError
+from langchain_core.exceptions import ModelRateLimitError
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, END
@@ -25,11 +28,30 @@ from tools.mcp_tool import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 # ── LLM ──────────────────────────────────────────────────────────────────────
+# Pinned to a specific dated model rather than a "-latest" alias on purpose:
+# gemini-flash-latest previously auto-shifted to gemini-3.8-flash, whose free-tier
+# quota is only 20 requests/day. gemini-3.5-flash-lite gives 500/day (still plenty
+# capable for this app's structured tool-calling), and won't change under us again
+# without an explicit edit here.
 _base_llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash-lite",
+    model="gemini-3.5-flash-lite",
     google_api_key=os.environ.get("GEMINI_API_KEY"),
 )
+
+# ServerError covers Gemini's transient 5xx responses (e.g. 503 UNAVAILABLE
+# "model is currently experiencing high demand"). Retry a few times with
+# exponential backoff before letting it surface as a user-facing failure.
+# Applied per call-site (rather than wrapping _base_llm directly) because
+# Runnable.with_retry() drops .bind_tools(), which payroll_logic/admin_logic need.
+_RETRY_KWARGS = dict(
+    retry_if_exception_type=(ServerError,),
+    wait_exponential_jitter=True,
+    stop_after_attempt=4,
+)
+_base_llm_retry = _base_llm.with_retry(**_RETRY_KWARGS)
 
 # Payroll tools (served by Spring Boot via MCP)
 PAYROLL_TOOLS = [
@@ -52,6 +74,28 @@ POLICY_TOOLS = [
     search_documents,
 ]
 
+def _extract_text(content) -> str:
+    """
+    Normalize an AIMessage.content value into plain text.
+
+    Older Gemini models returned a plain string. Newer ones (e.g.
+    gemini-flash-latest) can return a list of content blocks instead, e.g.
+    [{"type": "text", "text": "...", "extras": {...}}], so calling .strip()
+    directly on .content breaks with "'list' object has no attribute 'strip'".
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("text"):
+                parts.append(block["text"])
+        return "".join(parts)
+    return str(content) if content else ""
+
+
 # ── Shared State ──────────────────────────────────────────────────────────────
 class AgentState(TypedDict):
     query: str
@@ -67,7 +111,7 @@ async def supervisor(state: AgentState):
     query = state["query"].lower()
     recent_history = state.get("messages", [])[-4:]
     history_text = "\n".join(
-        [f"{type(m).__name__}: {m.content[:150]}" for m in recent_history]
+        [f"{type(m).__name__}: {_extract_text(m.content)[:150]}" for m in recent_history]
     )
 
     prompt = f"""
@@ -85,8 +129,8 @@ User Query: "{query}"
 
 Respond with ONLY the exact category name. No quotes, no extra text.
 """
-    response = await _base_llm.ainvoke([HumanMessage(content=prompt)])
-    route = response.content.strip().strip('"').strip("'").lower()
+    response = await _base_llm_retry.ainvoke([HumanMessage(content=prompt)])
+    route = _extract_text(response.content).strip().strip('"').strip("'").lower()
 
     valid_routes = ["policy_node", "admin_node", "payroll_node"]
     if route in valid_routes:
@@ -143,7 +187,7 @@ async def payroll_logic(state: AgentState, config: RunnableConfig):
     emp_id = state["emp_id"]
 
     # Build the ReAct agent graph on-the-fly (lightweight, no extra state)
-    llm_with_tools = _base_llm.bind_tools(PAYROLL_TOOLS)
+    llm_with_tools = _base_llm.bind_tools(PAYROLL_TOOLS).with_retry(**_RETRY_KWARGS)
     agent = create_react_agent(llm_with_tools, PAYROLL_TOOLS)
 
     # Note: emp_id is injected via the graph config so tools can read it automatically.
@@ -159,7 +203,7 @@ async def payroll_logic(state: AgentState, config: RunnableConfig):
 
     # The final AIMessage is the last message in the result
     final_message = result["messages"][-1]
-    answer = final_message.content if final_message.content else "I'm sorry, I couldn't formulate a proper response based on the available data."
+    answer = _extract_text(final_message.content).strip() or "I'm sorry, I couldn't formulate a proper response based on the available data."
 
     return {
         "final_answer": answer,
@@ -199,7 +243,7 @@ async def admin_logic(state: AgentState, config: RunnableConfig):
     if state["emp_id"] != "ADMIN":
         return {"final_answer": "Unauthorized Access. Only the ADMIN can query data for all employees."}
 
-    llm_with_tools = _base_llm.bind_tools(ADMIN_TOOLS)
+    llm_with_tools = _base_llm.bind_tools(ADMIN_TOOLS).with_retry(**_RETRY_KWARGS)
     agent = create_react_agent(llm_with_tools, ADMIN_TOOLS)
 
     messages = [
@@ -210,7 +254,7 @@ async def admin_logic(state: AgentState, config: RunnableConfig):
 
     result = await agent.ainvoke({"messages": messages}, config)
     final_message = result["messages"][-1]
-    answer = final_message.content if final_message.content else "I'm sorry, the admin query returned no text response."
+    answer = _extract_text(final_message.content).strip() or "I'm sorry, the admin query returned no text response."
 
     return {
         "final_answer": answer,
@@ -241,13 +285,14 @@ Instructions:
 - If the documents don't contain the answer, politely say so.
 """
     past_messages = state.get("messages", [])
-    response = await _base_llm.ainvoke(past_messages + [HumanMessage(content=prompt)], config)
+    response = await _base_llm_retry.ainvoke(past_messages + [HumanMessage(content=prompt)], config)
+    answer = _extract_text(response.content)
 
     return {
-        "final_answer": response.content,
+        "final_answer": answer,
         "messages": [
             HumanMessage(content=state["query"]),
-            AIMessage(content=response.content),
+            AIMessage(content=answer),
         ],
     }
 
@@ -302,5 +347,12 @@ async def run_salary_agent(query: str, emp_id: str, session_id: str):
                         yield "I apologize, but I received an empty response. Please try again."
                     else:
                         yield str(ans)
-    except Exception as e:
-        yield f"An internal server error occurred while analyzing your request: {str(e)}"
+    except ServerError:
+        logger.exception("Gemini API unavailable after retries (emp_id=%s)", emp_id)
+        yield "The AI service is currently experiencing high demand. Please try again in a moment."
+    except ModelRateLimitError:
+        logger.exception("Gemini API quota exhausted (emp_id=%s)", emp_id)
+        yield "The AI service has reached its usage quota for now (this project is on Gemini's free tier, capped at 20 requests/day per model). Please try again later, or upgrade the Gemini API plan to raise the limit."
+    except Exception:
+        logger.exception("Unhandled error in run_salary_agent (emp_id=%s)", emp_id)
+        yield "An internal server error occurred while analyzing your request. Please try again."

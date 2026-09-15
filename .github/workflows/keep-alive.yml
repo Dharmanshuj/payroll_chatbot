@@ -1,0 +1,25 @@
+name: Keep Render services awake
+
+# Pings both Render free-tier services' /health endpoints every 10 minutes so
+# they don't spin down after ~15 minutes of inactivity. Well under that window
+# even if a run is occasionally delayed (GitHub's scheduler doesn't guarantee
+# exact timing under load).
+"on":
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # allows manually triggering a run from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping FastAPI backend
+        run: |
+          curl --fail --silent --show-error --max-time 30 --retry 2 --retry-delay 5 \
+            https://payroll-chatbot-wyp5.onrender.com/health
+
+      - name: Ping Spring Boot MCP server
+        if: always() # still ping this one even if the FastAPI ping above failed
+        run: |
+          curl --fail --silent --show-error --max-time 30 --retry 2 --retry-delay 5 \
+            https://payroll-spring-mcp.onrender.com/health

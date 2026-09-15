@@ -32,3 +32,11 @@ app.add_middleware(
 
 # 3. Include Routers AFTER middleware
 app.include_router(chat_router)
+
+
+# 4. Lightweight health check for uptime pingers (e.g. UptimeRobot, cron-job.org)
+# to keep the Render free-tier instance from spinning down. Deliberately does NOT
+# touch the database or call Gemini, so pinging it costs nothing and stays fast.
+@app.get("/health")
+def health():
+    return {"status": "ok"}
