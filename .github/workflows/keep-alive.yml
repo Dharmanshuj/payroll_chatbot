@@ -4,9 +4,15 @@ name: Keep Render services awake
 # they don't spin down after ~15 minutes of inactivity. Well under that window
 # even if a run is occasionally delayed (GitHub's scheduler doesn't guarantee
 # exact timing under load).
+#
+# Deliberately offset from the top of the hour (":03, :13, :23, ...") rather
+# than "*/10" (":00, :10, :20, ..."): GitHub explicitly documents that
+# schedule-triggered runs queued at round minutes get delayed under load,
+# since enormous numbers of other repos schedule at those same exact times.
+# An odd offset avoids that contention.
 "on":
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "3,13,23,33,43,53 * * * *"
   workflow_dispatch: {} # allows manually triggering a run from the Actions tab
 
 jobs:
